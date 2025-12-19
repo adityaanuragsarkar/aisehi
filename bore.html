@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Heart Gesture - Personal Message</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: sans-serif; }
+        #instructions { position: absolute; top: 20px; left: 20px; color: white; z-index: 10; background: rgba(0,0,0,0.5); padding: 15px; border-radius: 8px; }
+        #video-hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div id="instructions">
+        <b>Personalized Gesture Particles</b><br>
+        Peace Sign (2 fingers): Form Heart + Show Message<br>
+        Pinch: Scale Heart & Text
+    </div>
+    <video id="video-hidden" autoplay playsinline></video>
+
+    <script type="importmap">
+        { "imports": { 
+            "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+        } }
+    </script>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+        import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+
+        // --- SCENE SETUP ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+        camera.position.z = 25;
+
+        // --- SHADER MATERIAL ---
+        const vertexShader = `
+            uniform float uMorph;
+            uniform float uSize;
+            attribute vec3 targetPosition;
+            varying vec3 vColor;
+            void main() {
+                vec3 mixedPos = mix(position, targetPosition, uMorph) * uSize;
+                vec4 mvPosition = modelViewMatrix * vec4(mixedPos, 1.0);
+                gl_PointSize = 5.0 * (15.0 / -mvPosition.z);
+                gl_Position = projectionMatrix * mvPosition;
+                vColor = mix(vec3(0.1, 0.6, 1.0), vec3(1.0, 0.1, 0.4), uMorph);
+            }
+        `;
+        const fragmentShader = `
+            varying vec3 vColor;
+            void main() {
+                if (length(gl_PointCoord - vec2(0.5)) > 0.5) discard;
+                gl_FragColor = vec4(vColor, 0.9);
+            }
+        `;
+
+        // --- GEOMETRY ---
+        const count = 12000;
+        const geo = new THREE.BufferGeometry();
+        const pos = new Float32Array(count * 3);
+        const target = new Float32Array(count * 3);
+
+        for(let i=0; i<count; i++) {
+            // Sphere
+            const r = 10;
+            const theta = Math.random() * Math.PI * 2;
+            const phi = Math.acos(2 * Math.random() - 1);
+            pos[i*3] = r * Math.sin(phi) * Math.cos(theta);
+            pos[i*3+1] = r * Math.sin(phi) * Math.sin(theta);
+            pos[i*3+2] = r * Math.cos(phi);
+
+            // Heart
+            const t = Math.random() * Math.PI * 2;
+            target[i*3] = 0.7 * (16 * Math.pow(Math.sin(t), 3));
+            target[i*3+1] = 0.7 * (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
+            target[i*3+2] = (Math.random() - 0.5) * 4;
+        }
+
+        geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+        geo.setAttribute('targetPosition', new THREE.BufferAttribute(target, 3));
+        const mat = new THREE.ShaderMaterial({
+            uniforms: { uMorph: { value: 0 }, uSize: { value: 1.0 } },
+            vertexShader, fragmentShader, transparent: true, blending: THREE.AdditiveBlending
+        });
+        const points = new THREE.Points(geo, mat);
+        scene.add(points);
+
+        // --- TEXT SETUP ---
+        const textGroup = new THREE.Group();
+        scene.add(textGroup);
+        const fontLoader = new FontLoader();
+        let textMesh;
+
+        fontLoader.load('https://threejs.org/examples/fonts/helvetiker_bold.typeface.json', (font) => {
+            const createText = (str, yPos) => {
+                const textGeo = new TextGeometry(str, { font: font, size: 1.2, height: 0.2 });
+                textGeo.center();
+                const textMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+                const mesh = new THREE.Mesh(textGeo, textMat);
+                mesh.position.y = yPos;
+                textGroup.add(mesh);
+            };
+            createText("I Love U Prativa", 1);
+            createText("and Tilak 2", -1);
+        });
+
+        // --- MEDIAPIPE ---
+        const videoElement = document.getElementById('video-hidden');
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.5 });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks[0]) {
+                const marks = results.multiHandLandmarks[0];
+                
+                // Peace sign detection
+                const peace = (marks[8].y < marks[6].y && marks[12].y < marks[10].y && marks[16].y > marks[14].y);
+                const targetM = peace ? 1.0 : 0.0;
+                
+                // Smooth interpolation
+                mat.uniforms.uMorph.value += (targetM - mat.uniforms.uMorph.value) * 0.1;
+                
+                // Apply opacity to text based on heart morph status
+                textGroup.children.forEach(child => {
+                    child.material.opacity = mat.uniforms.uMorph.value;
+                });
+
+                // Scale with pinch
+                const dist = Math.hypot(marks[4].x - marks[8].x, marks[4].y - marks[8].y);
+                const scaleVal = THREE.MathUtils.mapLinear(dist, 0.05, 0.3, 0.5, 2.5);
+                mat.uniforms.uSize.value = scaleVal;
+                textGroup.scale.setScalar(scaleVal);
+
+                // Rotation
+                points.rotation.y = textGroup.rotation.y = (marks[0].x - 0.5) * 3;
+            }
+        });
+
+        const cam = new Camera(videoElement, { onFrame: async () => { await hands.send({image: videoElement}); } });
+        cam.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+    </script>
+</body>
+</html>
